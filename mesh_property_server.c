@@ -57,7 +57,6 @@ extern wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
  ******************************************************/
 #define MESH_PID                0x301C
 #define MESH_VID                0x0002
-#define MESH_CACHE_REPLAY_SIZE  0x0008
 
 /******************************************************
  *          Structures
@@ -70,10 +69,10 @@ static void mesh_app_init(wiced_bool_t is_provisioned);
 static uint32_t mesh_app_proc_rx_cmd(uint16_t opcode, uint8_t *p_data, uint32_t length);
 static void mesh_property_server_message_handler(uint8_t element_idx, uint16_t event, void *p_data);
 static void mesh_property_server_status_changed(wiced_bt_mesh_event_t *p_event, uint8_t *p_data, uint32_t length);
-static void mesh_property_process_set(wiced_bt_mesh_property_set_data_t *p_data);
+static void mesh_property_process_status(int8_t element_idx, wiced_bt_mesh_property_status_data_t* p_set);
 
 #ifdef HCI_CONTROL
-static void mesh_property_hci_event_send_set(wiced_bt_mesh_hci_event_t *p_hci_event, wiced_bt_mesh_property_set_data_t *p_set);
+static void mesh_property_hci_event_send_status(int8_t element_idx, wiced_bt_mesh_property_status_data_t* p_data);
 #endif
 
 extern wiced_bt_mesh_core_config_t  mesh_config;
@@ -158,7 +157,6 @@ wiced_bt_mesh_core_config_t  mesh_config =
     .company_id         = MESH_COMPANY_ID_CYPRESS,                  // Company identifier assigned by the Bluetooth SIG
     .product_id         = MESH_PID,                                 // Vendor-assigned product identifier
     .vendor_id          = MESH_VID,                                 // Vendor-assigned product version identifier
-    .replay_cache_size  = MESH_CACHE_REPLAY_SIZE,                   // Number of replay protection entries, i.e. maximum number of mesh devices that can send application messages to this device.
 #if defined(LOW_POWER_NODE) && (LOW_POWER_NODE == 1)
     .features           = WICED_BT_MESH_CORE_FEATURE_BIT_LOW_POWER, // A bit field indicating the device features. In Low Power mode no Relay, no Proxy and no Friend
     .friend_cfg         =                                           // Empty Configuration of the Friend Feature
@@ -268,13 +266,8 @@ void mesh_property_server_message_handler(uint8_t element_idx, uint16_t event, v
 
     switch (event)
     {
-    case WICED_BT_MESH_USER_PROPERTY_SET:
-#if defined HCI_CONTROL
-        // In some cases we do not know the state of the user_property and need to ask MCU whenever client asks
-        // if ((p_hci_event = wiced_bt_mesh_create_hci_event(p_event)) != NULL)
-        // mesh_property_hci_event_send_set(p_hci_event, (wiced_bt_mesh_property_set_data_t *)p_data);
-#endif
-        mesh_property_process_set((wiced_bt_mesh_property_set_data_t *)p_data);
+    case WICED_BT_MESH_USER_PROPERTY_STATUS:
+        mesh_property_process_status(element_idx, (wiced_bt_mesh_property_status_data_t *)p_data);
         break;
 
     default:
@@ -345,7 +338,7 @@ void mesh_property_server_status_changed(wiced_bt_mesh_event_t *p_event, uint8_t
 /*
  * Sample implementation of the command from the Property client to set the state
  */
-void mesh_property_process_set(wiced_bt_mesh_property_set_data_t *p_set)
+void mesh_property_process_status(int8_t element_idx, wiced_bt_mesh_property_status_data_t *p_set)
 {
     int i;
 
@@ -364,21 +357,32 @@ void mesh_property_process_set(wiced_bt_mesh_property_set_data_t *p_set)
             break;
         }
     }
+
+#if defined HCI_CONTROL
+    // In some cases we do not know the state of the user_property and need to ask MCU whenever client asks
+     mesh_property_hci_event_send_status(element_idx, p_set);
+#endif
 }
 
 #ifdef HCI_CONTROL
 
 /*
- * Send Property Set event over transport
+ * Send Property Status event over transport
  */
-void mesh_property_hci_event_send_set(wiced_bt_mesh_hci_event_t *p_hci_event, wiced_bt_mesh_property_set_data_t *p_set)
+void mesh_property_hci_event_send_status(int8_t element_idx, wiced_bt_mesh_property_status_data_t *p_data)
+{
+    wiced_bt_mesh_hci_event_t* p_hci_event = wiced_bt_mesh_alloc_hci_event(element_idx);
+    if (p_hci_event)
 {
     uint8_t *p = p_hci_event->data;
 
-    UINT16_TO_STREAM(p, p_set->id);
-    ARRAY_TO_STREAM(p, p_set->value, p_set->len);
+        UINT8_TO_STREAM(p, p_data->type);
+        UINT8_TO_STREAM(p, p_data->access);
+        UINT16_TO_STREAM(p, p_data->id);
+        ARRAY_TO_STREAM(p, p_data->value, p_data->len);
 
-    mesh_transport_send_data(HCI_CONTROL_MESH_EVENT_PROPERTY_SET, (uint8_t *)p_hci_event, (uint16_t)(p - (uint8_t *)p_hci_event));
+        mesh_transport_send_data(HCI_CONTROL_MESH_EVENT_PROPERTY_STATUS, (uint8_t*)p_hci_event, (uint16_t)(p - (uint8_t*)p_hci_event));
+    }
 }
 
 #endif
